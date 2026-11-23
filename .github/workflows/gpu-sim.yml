@@ -1,0 +1,94 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this builds
+# the CUDA engine and runs the unit and statistical test suite on a simulated
+# NVIDIA H100 (https://github.com/pantheongpu/pantheonsim). A simulator cannot
+# reproduce hardware-specific behavior or timing, so it complements real-GPU
+# testing and does not replace it.
+#
+# The GPU tests in tests/test_cpu_gpu_agreement.cpp call QC_SKIP when no CUDA
+# device is found, and the runner still exits 0 in that case, so the job
+# checks the output for skipped tests and for simulator launch counters.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@deff5781e8adfd83dec98dd5242dcbc96a564773 # v0.1.10
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      # 90-virtual embeds PTX only, which the simulator runs. The simulator
+      # needs a shared CUDA runtime.
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.0/bin/nvcc \
+            -DCUDAToolkit_ROOT=/usr/local/cuda-13.0 \
+            -DCMAKE_CUDA_ARCHITECTURES=90-virtual \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
+
+      - name: Build
+        run: cmake --build build --target quantcuda_tests quantcuda -j3
+
+      # A wrong-architecture run can print a VirtualGPU error and still exit
+      # 0, and the GPU tests skip (still exit 0) without a device. So the log
+      # must show no skipped test and kernel launches recorded by the
+      # simulator. The full log is long, so only a summary is printed.
+      #
+      # Known failure on the simulator: gpu_path_types_match_cpu_when_built
+      # stops at the first mode 0 (early exit) barrier call with "CUDA moment
+      # count does not match path count". That test is one case, so it cannot
+      # be run in part. Any other failed test, or a different error, fails the
+      # job. Remove the exception when the test passes.
+      - name: Run the test suite
+        run: |
+          status=0
+          vgpu run --counters ./build/quantcuda_tests > test.log 2>&1 || status=$?
+          grep -E "^\[|PASS|SKIP|FAIL|tests, " test.log | grep -v counters || true
+          if grep -qiE "VirtualGPU error|no device|no CUDA-capable|SKIP " test.log; then
+            echo "::error::the run reported a device problem or a skipped test"; exit 1
+          fi
+          grep -qE "^[0-9]+ tests, [0-9]+ passed, [01] failed, 0 skipped$" test.log
+          unexpected=$(grep -E "^  FAIL " test.log | grep -vE "^  FAIL gpu_path_types_match_cpu_when_built$|unexpected exception: CUDA moment count does not match path count$" || true)
+          if [ -n "$unexpected" ]; then
+            echo "::error::unexpected test failure"; echo "$unexpected"; exit 1
+          fi
+          if [ "$status" != 0 ] && ! grep -q "^  FAIL gpu_path_types_match_cpu_when_built$" test.log; then
+            echo "::error::the test runner failed without a recognized failure"; exit 1
+          fi
+          grep -q "PASS gpu_matches_cpu_when_cuda_built" test.log
+          launches=$(grep -c "\[vgpu\]\[counters\]" test.log)
+          echo "kernel launch counter lines recorded by the simulator: $launches"
+          test "$launches" -ge 2
+
+      - name: Device info
+        run: vgpu run ./build/quantcuda info
