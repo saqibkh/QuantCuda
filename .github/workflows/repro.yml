@@ -1,0 +1,16 @@
+name: repro
+on:
+  push:
+    branches: [ sim-repro ]
+jobs:
+  r:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: pantheongpu/setup-pantheonsim@deff5781e8adfd83dec98dd5242dcbc96a564773 # v0.1.10
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+      - run: /usr/local/cuda-13.0/bin/nvcc -O2 -arch=compute_90 -cudart shared repro.cu -o repro
+      - run: vgpu run ./repro
