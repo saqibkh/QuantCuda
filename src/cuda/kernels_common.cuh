@@ -185,6 +185,7 @@ __device__ AccT block_reduce_warp(AccT v, AccT* smem /* >= 32 slots */) {
 template <typename T>
 __device__ __forceinline__ RunningMoments<T> warp_reduce_moments(
     RunningMoments<T> value) {
+    __syncwarp();
     const unsigned mask = __activemask();
     const int lane = threadIdx.x & 31;
     const int active_lanes = __popc(mask);
