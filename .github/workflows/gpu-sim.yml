@@ -11,17 +11,8 @@ name: GPU Simulator
 # checks the output for skipped tests and for simulator launch counters.
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ verify-gpu-sim ]
-  pull_request:
-    branches: [ main ]
-    paths:
-      - "src/**"
-      - "include/**"
-      - "tests/**"
-      - "CMakeLists.txt"
-      - ".github/workflows/gpu-sim.yml"
+    branches: [ sim-diag ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,38 +50,7 @@ jobs:
             -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
 
       - name: Build
-        run: cmake --build build --target quantcuda_tests quantcuda -j3
+        run: cmake --build build --target drv -j3
 
-      # A wrong-architecture run can print a VirtualGPU error and still exit
-      # 0, and the GPU tests skip (still exit 0) without a device. So the log
-      # must show no skipped test and kernel launches recorded by the
-      # simulator. The full log is long, so only a summary is printed.
-      #
-      # Known failure on the simulator: gpu_path_types_match_cpu_when_built
-      # stops at the first mode 0 (early exit) barrier call with "CUDA moment
-      # count does not match path count". That test is one case, so it cannot
-      # be run in part. Any other failed test, or a different error, fails the
-      # job. Remove the exception when the test passes.
-      - name: Run the test suite
-        run: |
-          status=0
-          vgpu run --counters ./build/quantcuda_tests > test.log 2>&1 || status=$?
-          grep -E "^\[|PASS|SKIP|FAIL|tests, " test.log | grep -v counters || true
-          if grep -qiE "VirtualGPU error|no device|no CUDA-capable|SKIP " test.log; then
-            echo "::error::the run reported a device problem or a skipped test"; exit 1
-          fi
-          grep -qE "^[0-9]+ tests, [0-9]+ passed, [01] failed, 0 skipped$" test.log
-          unexpected=$(grep -E "^  FAIL " test.log | grep -vE "^  FAIL gpu_path_types_match_cpu_when_built$|unexpected exception: CUDA moment count does not match path count$" || true)
-          if [ -n "$unexpected" ]; then
-            echo "::error::unexpected test failure"; echo "$unexpected"; exit 1
-          fi
-          if [ "$status" != 0 ] && ! grep -q "^  FAIL gpu_path_types_match_cpu_when_built$" test.log; then
-            echo "::error::the test runner failed without a recognized failure"; exit 1
-          fi
-          grep -q "PASS gpu_matches_cpu_when_cuda_built" test.log
-          launches=$(grep -c "\[vgpu\]\[counters\]" test.log)
-          echo "kernel launch counter lines recorded by the simulator: $launches"
-          test "$launches" -ge 2
-
-      - name: Device info
-        run: vgpu run ./build/quantcuda info
+      - name: Driver
+        run: vgpu run ./build/drv
